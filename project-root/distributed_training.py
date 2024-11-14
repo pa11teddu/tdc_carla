@@ -131,5 +131,5 @@ def train(rank, world_size):
 if __name__ == "__main__":
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "12355"  # Change port if needed
-    world_size = int(os.environ.get("WORLD_SIZE", 4))  # Number of processes (adjust as needed)
+    world_size = int(os.environ.get("WORLD_SIZE", 2))  # Number of processes (adjust as needed)
     mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
