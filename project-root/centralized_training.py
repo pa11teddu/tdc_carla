@@ -2,10 +2,12 @@ import torch
 import torch.optim as optim
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
-from models.unet import UNet
+from models.fpn import FPN
 from datasets.segmentation_dataset import SegmentationDataset
 from utils.metrics import calculate_iou, calculate_dice
 from utils.train_helpers import EarlyStopping, save_checkpoint
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 # Configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -13,13 +15,38 @@ num_classes = 3  # Adjust based on your dataset
 
 # Initialize dataset and dataloaders
 print("Loading datasets...")
-train_dataset = SegmentationDataset(image_dir="data/carla_lane_detection/images/train",
-                                    label_dir="data/carla_lane_detection/masks/train",
-                                    transform=None)  # Add transforms as needed
 
-val_dataset = SegmentationDataset(image_dir="data/carla_lane_detection/images/val",
-                                  label_dir="data/carla_lane_detection/masks/val",
-                                  transform=None)
+# Define training augmentations
+train_transform = A.Compose([
+    A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.2, rotate_limit=30, p=0.5),
+    A.Affine(shear=15, p=0.5),
+    A.GaussNoise(p=0.2),
+    A.CLAHE(p=0.5),
+    A.RandomGamma(gamma_limit=(80, 120), p=0.5),
+    A.OneOf([
+        A.Sharpen(p=1),
+        A.Blur(blur_limit=3, p=1),
+    ], p=0.5),
+    A.MotionBlur(p=0.3),
+    A.RandomContrast(limit=0.2, p=0.5),
+    A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=0.5),
+    ToTensorV2()
+])
+
+# Define validation transforms (only normalization and conversion to tensor)
+val_transform = A.Compose([
+    ToTensorV2()
+])
+
+train_dataset = SegmentationDataset(
+    image_dir="data/carla_lane_detection/images/train",
+    label_dir="data/carla_lane_detection/masks/train",
+    transform=train_transform)
+
+val_dataset = SegmentationDataset(
+    image_dir="data/carla_lane_detection/images/val",
+    label_dir="data/carla_lane_detection/masks/val",
+    transform=val_transform)
 
 train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=0)
 val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=0)
@@ -27,7 +54,7 @@ print("Datasets loaded successfully.")
 
 # Initialize model, loss function, optimizer, and scheduler
 print("Initializing model...")
-model = UNet(num_classes=num_classes).to(device)
+model = FPN(num_classes=num_classes).to(device)
 criterion = torch.nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
