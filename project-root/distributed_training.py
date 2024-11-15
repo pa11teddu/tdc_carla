@@ -4,17 +4,23 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import Adam, lr_scheduler
 from torch.utils.data import DataLoader, DistributedSampler
-from models.unet import UNet
+from models.fpn import FPN
 from datasets.segmentation_dataset import SegmentationDataset
 from utils.metrics import calculate_iou, calculate_dice
 from utils.train_helpers import EarlyStopping, save_checkpoint
 import torch.multiprocessing as mp
+from torchvision import transforms
+from torchvision.transforms import functional as TF
+import random
+import numpy as np
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 # Initialize DDP process group
 def setup_ddp(rank, world_size):
     dist.init_process_group(
-        backend="gloo",  
-        init_method="env://",  # Using environment variables for torchrun
+        backend="gloo",
+        init_method="env://",
         world_size=world_size,
         rank=rank
     )
@@ -22,6 +28,27 @@ def setup_ddp(rank, world_size):
 # Clean up DDP process group
 def cleanup_ddp():
     dist.destroy_process_group()
+
+# Replace SegmentationTransform class with Albumentations transforms
+train_transform = A.Compose([
+    A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.2, rotate_limit=30, p=0.5),
+    A.Affine(shear=15, p=0.5),
+    A.GaussNoise(p=0.2),
+    A.CLAHE(p=0.5),
+    A.RandomGamma(gamma_limit=(80, 120), p=0.5),
+    A.OneOf([
+        A.Sharpen(p=1),
+        A.Blur(blur_limit=3, p=1),
+    ], p=0.5),
+    A.MotionBlur(p=0.3),
+    A.RandomContrast(limit=0.2, p=0.5),
+    A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=0.5),
+    ToTensorV2()
+])
+
+val_transform = A.Compose([
+    ToTensorV2()
+])
 
 # Main training function
 def train(rank, world_size):
@@ -33,13 +60,13 @@ def train(rank, world_size):
     train_dataset = SegmentationDataset(
         image_dir="data/carla_lane_detection/images/train",
         label_dir="data/carla_lane_detection/masks/train",
-        transform=None
+        transform=train_transform
     )
     
     val_dataset = SegmentationDataset(
         image_dir="data/carla_lane_detection/images/val",
         label_dir="data/carla_lane_detection/masks/val",
-        transform=None
+        transform=val_transform
     )
 
     # Create DistributedSampler for data parallelism
@@ -51,7 +78,7 @@ def train(rank, world_size):
     val_loader = DataLoader(val_dataset, batch_size=16, sampler=val_sampler)
 
     # Initialize model, loss function, optimizer and scheduler
-    model = UNet(num_classes=3).to(device)
+    model = FPN(num_classes=3).to(device)
     model = DDP(model, device_ids=[rank] if torch.cuda.is_available() else None)
     
     criterion = torch.nn.CrossEntropyLoss()
@@ -130,6 +157,6 @@ def train(rank, world_size):
 # Main entry point to spawn multiple processes
 if __name__ == "__main__":
     os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"  # Change port if needed
-    world_size = int(os.environ.get("WORLD_SIZE", 2))  # Number of processes (adjust as needed)
+    os.environ["MASTER_PORT"] = "12355"
+    world_size = 2  # Set to use 2 GPUs
     mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
